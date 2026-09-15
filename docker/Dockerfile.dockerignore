@@ -1,0 +1,29 @@
+# Docker only reads this file because it sits next to docker/Dockerfile
+# (the build context is the project root).
+
+# Dependencies and build output are recreated inside the image
+node_modules
+.next
+*.tsbuildinfo
+coverage
+
+# Git and editors
+.git
+.gitignore
+.vscode
+.idea
+*.swp
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and local environment
+*.log
+.env*
+
+# Not needed to build the app
+docker
+*.md
+src/**/*.test.ts

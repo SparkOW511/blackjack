@@ -1,0 +1,21 @@
+services:
+  blackjack-web:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: blackjack-web
+    restart: unless-stopped
+    networks:
+      - traefik
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik"
+      - "traefik.http.routers.blackjack-web.rule=Host(`blackjack.borstnar.com`)"
+      - "traefik.http.routers.blackjack-web.entrypoints=websecure"
+      - "traefik.http.routers.blackjack-web.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.blackjack-web.middlewares=security-headers@file,compress@file"
+      - "traefik.http.services.blackjack-web.loadbalancer.server.port=3000"
+
+networks:
+  traefik:
+    external: true
