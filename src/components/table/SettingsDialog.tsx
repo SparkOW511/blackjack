@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { type Rules, baseHouseEdge } from "@/lib/blackjack/rules";
+import { SPEED_OPTIONS, type TableSpeed } from "@/lib/blackjack/timing";
 import { formatPercent } from "@/lib/storage";
 
 export interface TrainerSettings {
@@ -13,6 +14,12 @@ export interface TrainerSettings {
   quizEvery: 0 | 1 | 3 | 5;
   /** Base betting unit in dollars for the bet spread. */
   unit: number;
+  /** Other players at the table, seated to your right. */
+  aiSeats: number;
+  /** How long the dealer takes over each card and decision. */
+  speed: TableSpeed;
+  /** Seconds allowed per decision before the hand stands itself (0 = no timer). */
+  decisionSeconds: number;
 }
 
 export const DEFAULT_SETTINGS: TrainerSettings = {
@@ -22,6 +29,9 @@ export const DEFAULT_SETTINGS: TrainerSettings = {
   showTags: false,
   quizEvery: 0,
   unit: 10,
+  aiSeats: 0,
+  speed: "realistic",
+  decisionSeconds: 0,
 };
 
 interface SettingsDialogProps {
@@ -105,6 +115,34 @@ export function SettingsDialog({ open, onClose, rules, settings, canChangeRules,
               Off-the-top house edge with these rules:{" "}
               <span className="font-mono text-cream">{formatPercent(baseHouseEdge(draftRules), 2)}</span>. Changing rules
               shuffles a new shoe.
+            </p>
+          </fieldset>
+
+          <fieldset className="mt-8">
+            <legend className="text-xs font-semibold uppercase tracking-[0.18em] text-brass-300">The table</legend>
+            <div className="mt-3 grid gap-4 sm:grid-cols-2">
+              <Select
+                label="Other players"
+                value={String(draft.aiSeats)}
+                options={[["0", "Just you"], ["1", "1 other player"], ["2", "2 other players"], ["3", "3 other players"], ["4", "4 other players"]]}
+                onChange={(v) => setSetting("aiSeats", Number(v))}
+              />
+              <Select
+                label="Table speed"
+                value={draft.speed}
+                options={SPEED_OPTIONS.map(([v, text]) => [v, text] as [string, string])}
+                onChange={(v) => setSetting("speed", v as TableSpeed)}
+              />
+              <Select
+                label="Decision timer"
+                value={String(draft.decisionSeconds)}
+                options={[["0", "Off"], ["30", "30 seconds"], ["15", "15 seconds"], ["10", "10 seconds"]]}
+                onChange={(v) => setSetting("decisionSeconds", Number(v))}
+              />
+            </div>
+            <p className="mt-3 text-xs text-white/50">
+              Other players are dealt before you, so you see their cards before deciding — and they burn through the shoe
+              faster, which is what makes a live count hard to hold.
             </p>
           </fieldset>
 

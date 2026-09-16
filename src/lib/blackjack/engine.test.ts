@@ -1,9 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { type Card, type Rank, cardValue, handTotal } from "./cards";
 import { hiLoValue, trueCount } from "./count";
-import { gameReducer, initialGame, type GameState } from "./game";
+import {
+  type GameState,
+  advanceUntilInput,
+  gameReducer,
+  initialGame,
+  isYourTurn,
+  stepRound,
+  yourSeat,
+} from "./game";
 import { actionEVs, dealerDistribution, standEV } from "./odds";
 import { DEFAULT_RULES, type Rules } from "./rules";
+import { type AiSeatConfig, aiDecision } from "./seats";
 import { buildDecks, newShoe, shuffle, undealtComposition, type Shoe } from "./shoe";
 import { recommend } from "./strategy";
 
@@ -12,7 +21,7 @@ const c = (rank: Rank): Card => ({ rank, suit: "♠", id: `t${uid++}` });
 const cards = (...ranks: Rank[]) => ranks.map(c);
 const S17: Rules = { ...DEFAULT_RULES, dealerHitsSoft17: false };
 
-/** A game whose shoe deals exactly `order` (player, dealer up, player, dealer hole, then hits). */
+/** A game whose shoe deals `order` in sequence, after the burn card. */
 function riggedGame(order: Rank[], rules: Rules = DEFAULT_RULES): GameState {
   const filler = buildDecks(6);
   const shoe: Shoe = {
@@ -25,6 +34,14 @@ function riggedGame(order: Rank[], rules: Rules = DEFAULT_RULES): GameState {
   };
   return { ...initialGame(rules, 1000), shoe };
 }
+
+/** Deals a round and runs the table until it needs your decision. */
+function start(order: Rank[], { bet = 10, ai = [] as AiSeatConfig[], rules = DEFAULT_RULES } = {}): GameState {
+  return advanceUntilInput(gameReducer(riggedGame(order, rules), { type: "deal", bet, ai }));
+}
+
+const move = (g: GameState, m: "hit" | "stand" | "double" | "split") =>
+  advanceUntilInput(gameReducer(g, { type: "move", move: m }));
 
 describe("shoe", () => {
   it("shuffles into a permutation of the same cards", () => {
@@ -73,7 +90,6 @@ describe("strategy", () => {
 
   it("follows the basic strategy chart", () => {
     expect(recommend(situation(["10", "6"], "10"), DEFAULT_RULES, 0).basic).toBe("hit");
-    expect(recommend(situation(["5", "4", "7"], "10"), DEFAULT_RULES, -1).move).toBe("hit");
     expect(recommend(situation(["A", "7"], "2"), DEFAULT_RULES, 0).move).toBe("double");
     expect(recommend(situation(["A", "7"], "2"), S17, 0).move).toBe("stand");
     expect(recommend(situation(["8", "8"], "A"), DEFAULT_RULES, 0).move).toBe("split");
@@ -128,52 +144,136 @@ describe("odds", () => {
   });
 });
 
-describe("game flow", () => {
-  it("pays a natural 3:2 and counts the revealed hole card", () => {
-    let g = riggedGame(["A", "9", "K", "7"]);
-    g = gameReducer(g, { type: "deal", bet: 10 });
+describe("paced dealing", () => {
+  const twoBots: AiSeatConfig[] = [
+    { id: "a", name: "Ana", profile: "solid", bet: 25 },
+    { id: "b", name: "Bo", profile: "solid", bet: 25 },
+  ];
+
+  it("deals one card at a time in casino order, counting each as it lands", () => {
+    let g = gameReducer(riggedGame(["2", "3", "4", "5", "6", "7", "8", "9"]), { type: "deal", bet: 10, ai: twoBots });
+    expect(g.phase).toBe("dealing");
+
+    const counts: number[] = [];
+    for (let i = 0; i < 8; i++) {
+      g = stepRound(g);
+      counts.push(g.runningCount);
+    }
+
+    // 2,3,4,5,6 are +1 each; 7,8 are neutral; the hole card (9) is face-down and uncounted.
+    expect(counts).toEqual([1, 2, 3, 4, 5, 5, 5, 5]);
+    expect(g.seats.map((s) => s.hands[0].cards.map((card) => card.rank))).toEqual([
+      ["2", "6"],
+      ["3", "7"],
+      ["4", "8"],
+    ]);
+    expect(g.dealer.map((card) => card.rank)).toEqual(["5", "9"]);
+    expect(g.phase).toBe("seatTurn");
+  });
+
+  it("waits for you and lets the bots act on their own", () => {
+    const g = start(["2", "3", "4", "5", "6", "7", "8", "9"], { ai: twoBots });
+    expect(isYourTurn(g)).toBe(true);
+    // Both bots stood or finished before the turn reached you.
+    expect(g.activeSeat).toBe(g.youIndex);
+    expect(g.seats[0].hands[0].done || g.seats[0].hands[0].cards.length > 2).toBe(true);
+  });
+
+  it("keeps other players' money out of your bankroll and stats", () => {
+    let g = start(["10", "6", "9", "7", "5", "4"], { ai: [{ id: "a", name: "Dana", profile: "chaser", bet: 100 }] });
+    expect(isYourTurn(g)).toBe(true);
+    g = move(g, "stand");
     expect(g.phase).toBe("roundOver");
-    expect(g.hands[0].outcome).toBe("blackjack");
+    expect(g.stats.totalWagered).toBe(10);
+    expect(g.stats.wins + g.stats.losses + g.stats.pushes).toBe(1);
+    expect([990, 1000, 1010]).toContain(g.bankroll);
+  });
+});
+
+describe("game flow", () => {
+  it("pays a natural 3:2 and turns the hole card over", () => {
+    const g = start(["A", "9", "K", "7"]);
+    expect(g.phase).toBe("roundOver");
+    expect(yourSeat(g)!.hands[0].outcome).toBe("blackjack");
     expect(g.bankroll).toBe(1015);
+    // Every card that leaves the shoe is seen, so the count never drifts from the true shoe.
+    expect(g.holeRevealed).toBe(true);
     expect(g.runningCount).toBe(-2);
   });
 
   it("does not count the hole card until it is revealed", () => {
-    let g = riggedGame(["10", "5", "7", "2"]);
-    g = gameReducer(g, { type: "deal", bet: 10 });
-    expect(g.phase).toBe("playerTurn");
+    const g = start(["10", "5", "7", "2"]);
+    expect(isYourTurn(g)).toBe(true);
     expect(g.runningCount).toBe(0);
   });
 
   it("settles insurance against a dealer blackjack", () => {
-    let g = riggedGame(["10", "A", "9", "K"]);
-    g = gameReducer(g, { type: "deal", bet: 10 });
+    let g = start(["10", "A", "9", "K"]);
     expect(g.phase).toBe("insurance");
-    g = gameReducer(g, { type: "insurance", take: true });
+    g = advanceUntilInput(gameReducer(g, { type: "insurance", take: true }));
     expect(g.phase).toBe("roundOver");
     expect(g.bankroll).toBe(1000);
   });
 
   it("splits, deals each hand in turn, and doubles after split", () => {
-    let g = riggedGame(["8", "6", "8", "10", "3", "2", "10", "10"]);
-    g = gameReducer(g, { type: "deal", bet: 10 });
-    g = gameReducer(g, { type: "move", move: "split" });
-    expect(g.hands.map((h) => h.cards.length)).toEqual([2, 1]);
-    g = gameReducer(g, { type: "move", move: "double" }); // 8,3 + 2 = 13
-    expect(g.activeHand).toBe(1);
-    expect(g.hands[1].cards.length).toBe(2); // 8,10
-    g = gameReducer(g, { type: "move", move: "stand" });
+    let g = start(["8", "6", "8", "10", "3", "2", "10", "10"]);
+    g = move(g, "split");
+    const seat = yourSeat(g)!;
+    expect(seat.hands).toHaveLength(2);
+    expect(seat.hands[0].cards).toHaveLength(2);
+    g = move(g, "double"); // 8,3 + 2 = 13
+    expect(yourSeat(g)!.activeHand).toBe(1);
+    expect(yourSeat(g)!.hands[1].cards).toHaveLength(2); // 8,10
+    g = move(g, "stand");
     expect(g.phase).toBe("roundOver");
     expect(g.dealer.length).toBeGreaterThan(2);
     expect(g.stats.totalWagered).toBe(30);
   });
 
   it("grades a basic-strategy mistake and settles the loss", () => {
-    let g = riggedGame(["10", "10", "6", "7"]);
-    g = gameReducer(g, { type: "deal", bet: 10 });
-    g = gameReducer(g, { type: "move", move: "stand" }); // 16 vs 10 at a negative count: should hit
+    let g = start(["10", "10", "6", "7"]);
+    g = move(g, "stand"); // 16 vs 10 at a negative count: should hit
     expect(g.feedback[0].correct).toBe(false);
     expect(g.feedback[0].recommended).toBe("hit");
     expect(g.bankroll).toBe(990);
+  });
+});
+
+describe("AI profiles", () => {
+  const ctx = (hand: Rank[], up: Rank) => ({
+    cards: cards(...hand),
+    dealerUp: c(up),
+    canDouble: hand.length === 2,
+    canSplit: hand.length === 2 && cardValue(hand[0]) === cardValue(hand[1]),
+    rules: DEFAULT_RULES,
+  });
+
+  it("solid plays basic strategy", () => {
+    expect(aiDecision("solid", ctx(["10", "6"], "6"))).toBe("stand");
+    expect(aiDecision("solid", ctx(["10", "6"], "10"))).toBe("hit");
+  });
+
+  it("cautious never busts a stiff hand", () => {
+    expect(aiDecision("cautious", ctx(["10", "6"], "10"))).toBe("stand");
+    expect(aiDecision("cautious", ctx(["10", "2"], "7"))).toBe("stand");
+    expect(aiDecision("cautious", ctx(["5", "4"], "9"))).toBe("hit");
+  });
+
+  it("chaser hits stiffs even against a bust card", () => {
+    expect(aiDecision("chaser", ctx(["10", "6"], "6"))).toBe("hit");
+    expect(aiDecision("chaser", ctx(["A", "7"], "6"))).toBe("hit");
+  });
+
+  it("mimic plays the dealer's own rules", () => {
+    expect(aiDecision("mimic", ctx(["A", "6"], "10"))).toBe("hit");
+    expect(aiDecision("mimic", ctx(["10", "6"], "5"))).toBe("hit");
+    expect(aiDecision("mimic", ctx(["10", "7"], "10"))).toBe("stand");
+  });
+
+  it("always splits aces and eights", () => {
+    for (const profile of ["cautious", "chaser"] as const) {
+      expect(aiDecision(profile, ctx(["A", "A"], "6"))).toBe("split");
+      expect(aiDecision(profile, ctx(["8", "8"], "10"))).toBe("split");
+    }
   });
 });

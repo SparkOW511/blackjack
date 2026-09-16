@@ -9,15 +9,21 @@ import {
   currentTrueCount,
   gameReducer,
   initialGame,
+  isYourTurn,
   legalMoves,
+  pendingStep,
   recommendation,
+  yourSeat,
 } from "@/lib/blackjack/game";
 import { DEFAULT_RULES, type Rules, describeRules } from "@/lib/blackjack/rules";
+import { type AiSeatConfig, createAiSeats } from "@/lib/blackjack/seats";
 import { needsShuffle } from "@/lib/blackjack/shoe";
 import { INSURANCE_INDEX, type Move } from "@/lib/blackjack/strategy";
+import { stepDelay } from "@/lib/blackjack/timing";
 import { formatMoney, formatSigned, loadJSON, saveJSON } from "@/lib/storage";
 import { CoachPanel, MOVE_LABEL } from "./CoachPanel";
-import { DealerHand, PlayerHands } from "./HandView";
+import { DealerHand } from "./HandView";
+import { SeatView } from "./SeatView";
 import { DEFAULT_SETTINGS, SettingsDialog, type TrainerSettings } from "./SettingsDialog";
 
 const STORAGE_KEY = "true-count:table:v1";
@@ -74,13 +80,19 @@ export default function BlackjackTable() {
     lastBet: s.lastBet,
   }));
   const [settings, setSettings] = useState<TrainerSettings>({ ...DEFAULT_SETTINGS, ...saved.settings });
+  const [aiPlayers, setAiPlayers] = useState<AiSeatConfig[]>(() =>
+    createAiSeats({ ...DEFAULT_SETTINGS, ...saved.settings }.aiSeats),
+  );
   const [quizStats, setQuizStats] = useState(saved.quiz);
   const [bet, setBet] = useState(saved.lastBet);
   const [answeredRound, setAnsweredRound] = useState(-1);
   const [quizResult, setQuizResult] = useState<{ guess: number; actual: number } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [remainingMs, setRemainingMs] = useState(0);
 
   const betweenRounds = game.phase === "betting" || game.phase === "roundOver";
+  const yourTurn = isYourTurn(game);
+  const step = pendingStep(game);
   const quizDue =
     settings.quizEvery > 0 &&
     game.phase === "roundOver" &&
@@ -92,6 +104,29 @@ export default function BlackjackTable() {
   const tc = currentTrueCount(game);
   const countVisible = settings.showCount && !quizDue;
   const lastFeedback = game.feedback.at(-1);
+  const timerActive = yourTurn && settings.decisionSeconds > 0;
+
+  // The table deals itself forward one card, one decision at a time.
+  useEffect(() => {
+    if (!step) return;
+    const id = setTimeout(() => dispatch({ type: "tick" }), stepDelay(step, settings.speed));
+    return () => clearTimeout(id);
+  }, [step, game, settings.speed]);
+
+  // Optional decision clock; it restarts for every decision you face.
+  useEffect(() => {
+    if (!timerActive) return;
+    const deadline = Date.now() + settings.decisionSeconds * 1000;
+    const id = setInterval(() => {
+      const left = Math.max(0, deadline - Date.now());
+      setRemainingMs(left);
+      if (left <= 0) {
+        clearInterval(id);
+        dispatch({ type: "move", move: "stand" });
+      }
+    }, 100);
+    return () => clearInterval(id);
+  }, [timerActive, settings.decisionSeconds, game]);
 
   useEffect(() => {
     if (!betweenRounds) return;
@@ -108,7 +143,7 @@ export default function BlackjackTable() {
   const deal = () => {
     if (!canDeal) return;
     setQuizResult(null);
-    dispatch({ type: "deal", bet });
+    dispatch({ type: "deal", bet, ai: aiPlayers });
   };
 
   const answerQuiz = (guess: number) => {
@@ -123,7 +158,7 @@ export default function BlackjackTable() {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.target instanceof HTMLElement && e.target.closest("input, select, textarea, dialog")) return;
       const key = e.key.toLowerCase();
-      if (game.phase === "playerTurn") {
+      if (yourTurn) {
         const found = MOVES.find((m) => m.key.toLowerCase() === key);
         if (found && legal[found.move]) {
           e.preventDefault();
@@ -149,10 +184,24 @@ export default function BlackjackTable() {
           ? "New shoe shuffled — running count resets to 0"
           : null;
 
+  const status =
+    game.phase === "dealing"
+      ? "Dealing…"
+      : game.phase === "seatTurn" && !yourTurn
+        ? `${game.seats[game.activeSeat]?.name ?? "Player"} is playing…`
+        : game.phase === "dealerTurn"
+          ? "Dealer plays…"
+          : null;
+
+  const yourBet = yourSeat(game)?.hands[0].bet ?? bet;
+
   return (
     <main className="mx-auto w-full max-w-7xl px-4 py-4 sm:px-6 lg:py-6">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <p className="font-mono text-xs text-white/50">{describeRules(game.rules)}</p>
+        <p className="font-mono text-xs text-white/50">
+          {describeRules(game.rules)}
+          {settings.aiSeats > 0 && ` · ${settings.aiSeats + 1} players`}
+        </p>
         <div className="flex items-center gap-2">
           <span className="rounded-full bg-white/5 px-3 py-1.5 text-sm text-white/70">
             Bankroll <strong className="ml-1 font-mono text-brass-200 tabular">{formatMoney(game.bankroll)}</strong>
@@ -168,7 +217,7 @@ export default function BlackjackTable() {
 
       <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
         <div className="flex min-w-0 flex-col gap-3">
-          <section className="felt felt-noise relative flex min-h-[30rem] flex-col justify-between gap-4 overflow-hidden rounded-[2rem] px-3 py-5 sm:min-h-[36rem] sm:rounded-[3rem] sm:px-10 sm:py-8">
+          <section className="felt felt-noise relative flex min-h-120 flex-col justify-between gap-4 overflow-hidden rounded-4xl px-3 py-5 sm:min-h-144 sm:rounded-[3rem] sm:px-10 sm:py-8">
             <div className="flex min-h-7 justify-center">
               {notice && (
                 <span key={notice} className="animate-pop rounded-full bg-felt-950/70 px-3 py-1 text-center text-xs text-brass-200 ring-1 ring-brass-400/30">
@@ -180,7 +229,7 @@ export default function BlackjackTable() {
             {game.dealer.length > 0 ? (
               <DealerHand cards={game.dealer} holeRevealed={game.holeRevealed} showTags={settings.showTags} />
             ) : (
-              <div className="mx-auto h-[5.25rem] w-32 rounded-xl border-2 border-dashed border-white/10 sm:h-[6.3rem]" />
+              <div className="mx-auto h-21 w-32 rounded-xl border-2 border-dashed border-white/10 sm:h-[6.3rem]" />
             )}
 
             <div className="pointer-events-none flex min-h-16 flex-col items-center justify-center text-center">
@@ -194,6 +243,8 @@ export default function BlackjackTable() {
                     {game.roundNet === 0 ? "Push" : formatMoney(game.roundNet, true)}
                   </div>
                 </div>
+              ) : status ? (
+                <span className="rounded-full bg-felt-950/50 px-4 py-1.5 text-sm text-brass-200/90">{status}</span>
               ) : (
                 <div className="font-display text-brass-300/50">
                   <div className="text-sm tracking-[0.3em] sm:text-base">
@@ -206,13 +257,18 @@ export default function BlackjackTable() {
               )}
             </div>
 
-            {game.hands.length > 0 ? (
-              <PlayerHands
-                hands={game.hands}
-                activeHand={game.activeHand}
-                isPlayerTurn={game.phase === "playerTurn"}
-                showTags={settings.showTags}
-              />
+            {game.seats.length > 0 ? (
+              <div className="flex flex-wrap items-end justify-center gap-1 sm:gap-3">
+                {game.seats.map((seat, i) => (
+                  <SeatView
+                    key={seat.id}
+                    seat={seat}
+                    isYou={i === game.youIndex}
+                    isActive={game.phase === "seatTurn" && game.activeSeat === i}
+                    showTags={settings.showTags}
+                  />
+                ))}
+              </div>
             ) : (
               <div className="mx-auto grid size-28 place-items-center rounded-full border-2 border-dashed border-brass-400/40 text-center">
                 <div>
@@ -248,33 +304,48 @@ export default function BlackjackTable() {
               </div>
             )}
 
-            {game.phase === "playerTurn" && (
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                {MOVES.map(({ move, key }) => {
-                  const coached = settings.coachBeforeActing && rec?.move === move;
-                  return (
-                    <button
-                      key={move}
-                      disabled={!legal[move]}
-                      onClick={() => dispatch({ type: "move", move })}
-                      className={`group flex items-center justify-between rounded-2xl px-4 py-3 font-semibold transition disabled:cursor-not-allowed disabled:opacity-30 ${
-                        coached
-                          ? "bg-brass-400 text-felt-950 shadow-lg shadow-brass-500/30 hover:bg-brass-300"
-                          : "bg-white/8 text-cream hover:bg-white/15"
-                      }`}
-                    >
-                      {MOVE_LABEL[move]}
-                      <kbd className={`rounded px-1.5 font-mono text-[11px] ${coached ? "bg-felt-950/15" : "bg-black/30 text-white/50"}`}>{key}</kbd>
-                    </button>
-                  );
-                })}
+            {yourTurn && (
+              <div className="flex flex-col gap-3">
+                {timerActive && (
+                  <div className="flex items-center gap-3">
+                    <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/10">
+                      <div
+                        className="h-full bg-brass-400 transition-[width] duration-100"
+                        style={{ width: `${((remainingMs || settings.decisionSeconds * 1000) / (settings.decisionSeconds * 1000)) * 100}%` }}
+                      />
+                    </div>
+                    <span className="font-mono text-xs text-white/60 tabular">
+                      {Math.ceil((remainingMs || settings.decisionSeconds * 1000) / 1000)}s
+                    </span>
+                  </div>
+                )}
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  {MOVES.map(({ move, key }) => {
+                    const coached = settings.coachBeforeActing && rec?.move === move;
+                    return (
+                      <button
+                        key={move}
+                        disabled={!legal[move]}
+                        onClick={() => dispatch({ type: "move", move })}
+                        className={`group flex items-center justify-between rounded-2xl px-4 py-3 font-semibold transition disabled:cursor-not-allowed disabled:opacity-30 ${
+                          coached
+                            ? "bg-brass-400 text-felt-950 shadow-lg shadow-brass-500/30 hover:bg-brass-300"
+                            : "bg-white/8 text-cream hover:bg-white/15"
+                        }`}
+                      >
+                        {MOVE_LABEL[move]}
+                        <kbd className={`rounded px-1.5 font-mono text-[11px] ${coached ? "bg-felt-950/15" : "bg-black/30 text-white/50"}`}>{key}</kbd>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             )}
 
             {game.phase === "insurance" && (
               <div className="flex flex-col items-center gap-3 sm:flex-row sm:justify-between">
                 <p className="text-sm text-white/80">
-                  Dealer shows an ace. Insurance costs <strong>{formatMoney(game.hands[0].bet / 2)}</strong> and pays 2 to 1.
+                  Dealer shows an ace. Insurance costs <strong>{formatMoney(yourBet / 2)}</strong> and pays 2 to 1.
                 </p>
                 <div className="flex gap-2">
                   {[true, false].map((take) => {
@@ -294,6 +365,10 @@ export default function BlackjackTable() {
                   })}
                 </div>
               </div>
+            )}
+
+            {!betweenRounds && !yourTurn && game.phase !== "insurance" && (
+              <p className="py-2 text-center text-sm text-white/50">{status}</p>
             )}
 
             {betweenRounds && quizDue && <CountQuiz onSubmit={answerQuiz} />}
@@ -394,6 +469,7 @@ export default function BlackjackTable() {
           canChangeRules={betweenRounds}
           onApply={(rules, next) => {
             if (betweenRounds && JSON.stringify(rules) !== JSON.stringify(game.rules)) dispatch({ type: "setRules", rules });
+            if (next.aiSeats !== settings.aiSeats) setAiPlayers(createAiSeats(next.aiSeats));
             setSettings(next);
             setSettingsOpen(false);
           }}

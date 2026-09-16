@@ -6,9 +6,11 @@ import {
   type GameState,
   currentTrueCount,
   dealerPeeked,
+  isYourTurn,
   legalMoves,
   recommendation,
   unseenComposition,
+  yourSeat,
 } from "@/lib/blackjack/game";
 import {
   DEALER_OUTCOME_LABELS,
@@ -77,12 +79,13 @@ export function CoachPanel({ game, showCount, showOdds, concealed, quizStats }: 
     const comp = unseenComposition(game);
     const next = nextCardOdds(comp);
     const up = game.dealer[0];
-    const hand = game.hands[game.activeHand];
+    const seat = yourSeat(game);
+    const hand = seat?.hands[seat.activeHand];
     if (game.phase === "insurance" && up) {
       const pTen = comp[9] / comp.reduce((a, b) => a + b, 0);
       return { next, insuranceEV: 3 * pTen - 1, pTen, turn: null };
     }
-    if (game.phase !== "playerTurn" || !up || !hand) return { next, insuranceEV: null, pTen: null, turn: null };
+    if (!isYourTurn(game) || !up || !hand) return { next, insuranceEV: null, pTen: null, turn: null };
     const legal = legalMoves(game);
     const dealer = dealerDistribution(up, comp, rules.dealerHitsSoft17, dealerPeeked(game));
     const evs = actionEVs({
