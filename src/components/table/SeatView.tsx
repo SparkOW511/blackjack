@@ -69,7 +69,7 @@ function HandStack({
       <div className={`flex ${isYou ? "min-h-21 sm:min-h-[6.3rem]" : "min-h-16"}`}>
         {hand.cards.map((card, i) => (
           <div key={card.id} className={i > 0 ? (isYou ? "-ml-8 sm:-ml-10" : "-ml-6") : ""}>
-            <PlayingCard card={card} size={isYou ? "md" : "sm"} showTag={showTags} />
+            <PlayingCard card={card} size={isYou ? "md" : "sm"} showTag={showTags && i === hand.cards.length - 1} />
           </div>
         ))}
       </div>

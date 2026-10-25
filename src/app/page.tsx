@@ -76,7 +76,7 @@ export default function Home() {
           <div className="flex -space-x-6 sm:-space-x-8">
             {HERO_CARDS.map((card, i) => (
               <div key={card.id} style={{ transform: `rotate(${(i - 2) * 7}deg) translateY(${Math.abs(i - 2) * 8}px)` }}>
-                <PlayingCard card={card} size="lg" index={i} showTag />
+                <PlayingCard card={card} size="lg" index={i} showTag={i === HERO_CARDS.length - 1} />
               </div>
             ))}
           </div>

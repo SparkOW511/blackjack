@@ -49,7 +49,7 @@ export function DealerHand({
                 card={card}
                 faceDown={hidden}
                 animate={i === 1 && holeRevealed ? "flip" : "deal"}
-                showTag={showTags && !hidden}
+                showTag={showTags && !hidden && i === cards.length - 1}
               />
             </div>
           );
